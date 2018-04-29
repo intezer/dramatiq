@@ -25,6 +25,7 @@ Changed
 * Bumped pika to version 0.12.  Because of this change, the
   ``interrupt`` method on |Broker| and its usages within |Worker| have
   been dropped.
+* There is no longer a max message delay.
 
 Fixed
 ^^^^^
