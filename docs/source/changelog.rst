@@ -22,6 +22,14 @@ Changed
 ^^^^^^^
 
 * |TimeLimitExceeded| is now a subclass of |Interrupt|.
+* Bumped pika to version 0.12.  Because of this change, the
+  ``interrupt`` method on |Broker| and its usages within |Worker| have
+  been dropped.
+
+Fixed
+^^^^^
+
+* |StubBroker_join| and |Worker_join| are now more reliable.
 
 Deprecated
 ^^^^^^^^^^
