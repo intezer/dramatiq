@@ -62,6 +62,8 @@ redis.call("zadd", heartbeats, timestamp, worker_id)
 local queue_canonical_name = queue_name
 if string.sub(queue_name, -3) == ".DQ" then
     queue_canonical_name = string.sub(queue_name, 1, -4)
+elseif string.sub(queue_name, -4, -2) == ".PR" then
+    queue_canonical_name = string.sub(queue_name, 1, -5)
 end
 
 local queue_acks = acks .. "." .. queue_name

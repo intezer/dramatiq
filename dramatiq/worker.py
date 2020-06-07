@@ -163,7 +163,7 @@ class Worker:
             self.work_queue.join()
 
             # If nothing got put on the delay queues while we were
-            # joining on the work queue then it shoud be safe to exit.
+            # joining on the work queue then it should be safe to exit.
             # This could still miss stuff but the chances are slim.
             for consumer in self.consumers.values():
                 if consumer.delay_queue.unfinished_tasks:
@@ -313,7 +313,9 @@ class _ConsumerThread(Thread):
             else:
                 actor = self.broker.get_actor(message.actor_name)
                 self.logger.debug("Pushing message %r onto work queue.", message.message_id)
-                self.work_queue.put((actor.priority, message))
+                priority = message.options.get("broker_priority", actor.priority)
+                print("Pushing message {} onto work queue with priority {}.".format(message.message_id, priority))
+                self.work_queue.put((priority, message))
         except ActorNotFound:
             self.logger.error(
                 "Received message for undefined actor %r. Moving it to the DLQ.",
@@ -478,7 +480,7 @@ class _WorkerThread(Thread):
         except BaseException as e:
             # Stuff the exception into the message [proxy] so that it
             # may be used by the stub broker to provide a nicer
-            # testing experience.  Also used by the results middleware
+            # testing experience. Also used by the results middleware
             # to pass exceptions into results.
             message.stuff_exception(e)
 

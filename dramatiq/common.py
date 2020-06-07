@@ -130,3 +130,9 @@ def xq_name(queue_name):
     if queue_name.endswith(".DQ"):
         queue_name = queue_name[:-3]
     return queue_name + ".XQ"
+
+
+def pri_name(queue_name, priority):
+    if queue_name.endswith(".PR{}".format(priority)):
+        return queue_name
+    return "{}.PR{}".format(queue_name, priority)

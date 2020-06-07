@@ -5,11 +5,10 @@ import pytest
 import redis
 
 import dramatiq
-from dramatiq import Message, QueueJoinTimeout
+from dramatiq import Message, QueueJoinTimeout, Worker
 from dramatiq.brokers.redis import MAINTENANCE_SCALE, RedisBroker
 from dramatiq.common import current_millis, dq_name, xq_name
 from dramatiq.errors import ConnectionError
-
 from .common import worker
 
 LUA_MAX_UNPACK_SIZE = 7999
@@ -461,3 +460,91 @@ def test_redis_consumer_nack_can_retry_on_connection_error(redis_broker, redis_w
         assert nack_mock.call_count >= 2
         # And I expect there to be no outstanding messages
         assert consumer.outstanding_message_count == 0
+
+
+def test_redis_consumer_ack_in_the_correct_order_when_priority_is_used(redis_broker):
+    # Given that I have prioritized redis broker
+    number_of_messages_to_enqueue = 10
+    redis_broker.priority_steps = list(range(number_of_messages_to_enqueue))
+    priorities = []
+
+    # And an actor that consumes messages
+    @dramatiq.actor()
+    def run0(priority):
+        priorities.append(priority)
+
+    # If I send that actor many async messages with increasing priority
+    for i in sorted(range(number_of_messages_to_enqueue), reverse=True):
+        assert run0.send_with_options(args=(i,), broker_priority=i)
+
+    # And I give the worker time to process the messages
+    redis_worker = Worker(redis_broker, worker_threads=1)
+    redis_worker.start()
+    redis_broker.join(run0.queue_name)
+    redis_worker.join()
+
+    # I expect the messages to be processed in decreasing order
+    assert priorities == redis_broker.priority_steps
+
+
+def test_redis_consumer_nack_prioritized_to_the_same_dead_letter_queue(redis_broker):
+    # Given that I have a broker with no retries
+    number_of_messages_to_enqueue = 3
+    redis_broker.priority_steps = list(range(number_of_messages_to_enqueue))
+
+    # And an actor that always fails
+    @dramatiq.actor(max_retries=0)
+    def run1():
+        raise RuntimeError
+
+    # If I send that actor many async messages with increasing priority
+    for i in sorted(range(number_of_messages_to_enqueue), reverse=True):
+        assert run1.send_with_options(broker_priority=i)
+
+    # And I give the workers time to process the messages
+    redis_worker = Worker(redis_broker, worker_threads=1)
+    redis_worker.start()
+    redis_broker.join(run1.queue_name)
+    redis_worker.join()
+
+    # I expect it all messages to end up in the same dead letter queue
+    dead_queue_name = "dramatiq:%s" % xq_name(run1.queue_name)
+    dead_ids = redis_broker.client.zrangebyscore(dead_queue_name, 0, "+inf")
+    assert dead_ids
+
+
+def test_redis_consumer_requeue_prioritized_messages_to_the_same_queue(redis_broker):
+    # Given that I have a redis broker with high prefetch
+    number_of_messages_to_enqueue = 3
+    redis_broker.priority_steps = list(range(number_of_messages_to_enqueue))
+    priorities = []
+
+    # And an actor that takes the time to process messages
+    @dramatiq.actor()
+    def run2(priority):
+        print('Started running task {}'.format(priority))
+        time.sleep(1)
+        priorities.append(priority)
+        print('Done running task {}'.format(priority))
+
+    # If I send that actor many async messages
+    for i in sorted(range(number_of_messages_to_enqueue), reverse=True):
+        assert run2.send_with_options(args=(i,), broker_priority=i)
+
+    # And I give the workers very little time to process the messages
+    redis_worker = Worker(redis_broker, worker_threads=1)
+    redis_worker.queue_prefetch = number_of_messages_to_enqueue
+    redis_worker.start()
+    redis_worker.stop(10000)
+
+    # I expect to some messages to not be processed and requeued
+    assert priorities == [0]
+
+    # And then I start new worker and give time to process the messages
+    redis_worker = Worker(redis_broker, worker_threads=1)
+    redis_worker.start()
+    redis_broker.join(run2.queue_name)
+    redis_worker.join()
+
+    # I expect the messages to be processed in decreasing order
+    assert priorities == redis_broker.priority_steps
