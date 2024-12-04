@@ -146,7 +146,7 @@ class Worker:
         self.logger.debug("Requeueing in-memory messages...")
         messages_by_queue = defaultdict(list)
         for _, message in iter_queue(self.work_queue):
-            messages_by_queue[message.queue_name].append(message)
+            messages_by_queue[self.broker.get_actor(message.actor_name).queue_name].append(message)
 
         for queue_name, messages in messages_by_queue.items():
             try:
@@ -316,6 +316,8 @@ class _ConsumerThread(Thread):
         If the message has an eta, delay it.  Otherwise, put it on the
         work queue.
         """
+        if q_name(message.queue_name) != q_name(self.queue_name):
+            self.logger.warning("Received message for queue %r but message queue is %r.", self.queue_name, message.queue_name)
         try:
             if "eta" in message.options:
                 self.logger.debug("Pushing message %r onto delay queue.", message.message_id)
@@ -478,12 +480,12 @@ class _WorkerThread(Thread):
         """
         actor = None
         try:
+            actor = self.broker.get_actor(message.actor_name)
             self.logger.debug("Received message %s with id %r.", message, message.message_id)
             self.broker.emit_before("process_message", message)
 
             res = None
             if not message.failed:
-                actor = self.broker.get_actor(message.actor_name)
                 res = actor(*message.args, **message.kwargs)
                 if res is not None \
                    and message.options.get("pipe_target") is None \
@@ -521,7 +523,12 @@ class _WorkerThread(Thread):
             # processed must have come off of a consumer.  Therefore,
             # there has to be a consumer for that message's queue so
             # this is safe.  Probably.
-            self.consumers[message.queue_name].post_process_message(message)
+            queue_name = actor.queue_name if actor else message.queue_name
+            if queue_name in self.consumers:
+                self.consumers[queue_name].post_process_message(message)
+            else:
+                self.logger.error("No consumer for queue %r found.", queue_name)
+
             self.work_queue.task_done()
 
             # See discussion #351.  Keeping a reference to the
