@@ -27,6 +27,7 @@ from .errors import (
     ActorNotFound,
     BrokerConnectionError,
     BrokerError,
+    BrokerShutdown,
     ConnectionClosed,
     ConnectionFailed,
     DecodeError,
@@ -70,6 +71,7 @@ __all__ = [
     "BrokerConnectionError",
     "ConnectionClosed",
     "ConnectionFailed",
+    "BrokerShutdown",
     "RateLimitExceeded",
     "Retry",
     # Logging
