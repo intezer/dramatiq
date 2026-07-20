@@ -29,7 +29,7 @@ import pika
 
 from ..broker import Broker, Consumer, MessageProxy
 from ..common import current_millis, dq_name, q_name, xq_name
-from ..errors import ConnectionClosed, DecodeError, QueueJoinTimeout
+from ..errors import BrokerShutdown, ConnectionClosed, DecodeError, QueueJoinTimeout
 from ..logging import get_logger
 from ..message import Message, get_encoder
 from ..middleware import Middleware
@@ -48,6 +48,12 @@ DELAY_QUEUE_LEASE_FACTOR = 0.75
 
 #: The smallest ``consumer_timeout`` Dramatiq accepts, in milliseconds.
 MIN_CONSUMER_TIMEOUT = 900_000
+
+#: AMQP reply codes for a disconnect the broker initiated deliberately and
+#: from which the consumer recovers by reconnecting (e.g. a restart or deploy).
+#: These are logged as warnings rather than critical faults.  320 is
+#: CONNECTION_FORCED; genuine faults (e.g. 404, 406, 541) keep their level.
+EXPECTED_DISCONNECT_CODES = frozenset({320})
 
 
 class RabbitmqBroker(Broker):
@@ -628,10 +634,16 @@ class _RabbitmqConsumer(Consumer):
             pika.exceptions.AMQPConnectionError,
             pika.exceptions.AMQPChannelError,
         ) as e:
+            reply_code = getattr(e, "reply_code", None)
             # If the queue disappears, add it to the set of pending queues
             # so that it can be redeclared on when the consumer restarts.
-            if getattr(e, "reply_code", None) == 404:
+            if reply_code == 404:
                 self.broker.queues_pending.add(q_name(self.queue_name))
+            # A disconnect the broker initiated deliberately (e.g. a restart)
+            # is recoverable -- the consumer restarts -- so raise BrokerShutdown,
+            # which the worker logs as a warning rather than a critical.
+            if reply_code in EXPECTED_DISCONNECT_CODES:
+                raise BrokerShutdown(e) from None
             raise ConnectionClosed(e) from None
 
         try:
@@ -655,10 +667,14 @@ class _RabbitmqConsumer(Consumer):
             # finish processing so we enqueue a final callback and
             # wait for it to finish before closing the connection.
             # Assumes callbacks are called in order (they should be).
-            all_callbacks_handled = Event()
-            self.connection.add_callback_threadsafe(all_callbacks_handled.set)
-            while not all_callbacks_handled.is_set():
-                self.connection.sleep(0)
+            if self.connection.is_open:
+                all_callbacks_handled = Event()
+                self.connection.add_callback_threadsafe(all_callbacks_handled.set)
+                while not all_callbacks_handled.is_set():
+                    self.connection.sleep(0)
+            else:
+                # Nothing to drain; add_callback_threadsafe would raise on it.
+                self.logger.debug("Connection already closed; skipping callback drain.")
         except Exception:
             self.logger.exception(
                 "Failed to wait for all callbacks to complete.  This "
