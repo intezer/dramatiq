@@ -70,15 +70,6 @@ class ConnectionClosed(BrokerConnectionError):
     """Raised when a broker connection is suddenly closed."""
 
 
-class BrokerShutdown(BrokerConnectionError):
-    """Raised when the broker the consumer is connected to is shutting down
-    (e.g. a restart or deploy), forcibly closing the connection.  The consumer
-    reconnects, so the worker logs this as a warning rather than a critical
-    error; a broker that stays down still surfaces as critical on the failed
-    reconnects.
-    """
-
-
 class RateLimitExceeded(DramatiqError):
     """Raised when a rate limit has been exceeded."""
 

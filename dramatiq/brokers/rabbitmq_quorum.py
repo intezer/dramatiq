@@ -20,17 +20,22 @@ contribution.
 
 The upstream change is the ``consumer_timeout`` re-lease on
 :class:`~dramatiq.brokers.rabbitmq.RabbitmqBroker` alone; this subclass ships
-only in Intezer's internal ``dramatiq`` build and relies solely on the base
-class's overridable surface -- ``_build_queue_arguments``, ``_declare_dq_queue``,
-``_declare_xq_queue`` and ``consumer_timeout`` -- so the base fix stays
-upstream-compatible.
+only in Intezer's internal ``dramatiq`` build and relies on the base class's
+overridable surface -- ``_build_queue_arguments``, ``_declare_dq_queue``,
+``_declare_xq_queue``, ``consume`` and ``consumer_timeout`` -- plus a logging
+filter it installs on the worker's per-queue logger to downgrade the
+connection-error record for a deliberate broker restart.  It changes no base
+code, so the base fix stays upstream-compatible.
 """
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Optional
 
+from ..broker import Consumer
 from ..common import dq_name, xq_name
+from ..logging import get_logger
 from .rabbitmq import DEAD_MESSAGE_TTL, MIN_CONSUMER_TIMEOUT, RabbitmqBroker
 
 
@@ -69,6 +74,19 @@ class QuorumRabbitmqBroker(RabbitmqBroker):
         # failure mode this broker exists to survive).
         super().__init__(confirm_delivery=confirm_delivery, consumer_timeout=consumer_timeout, **kwargs)
 
+    def consume(self, queue_name: str, prefetch: int = 1, timeout: int = 5000) -> Consumer:
+        # The worker logs a per-queue critical when the broker deliberately
+        # closes the connection (a recoverable restart/deploy).  Filters only
+        # run on the originating logger, so attach ours to this queue's worker
+        # logger here, where the consuming queue name is known.  Local import
+        # avoids any cycle and reads the worker module's own logger prefix.
+        from .. import worker
+
+        logger = get_logger(worker.__name__, "ConsumerThread(%s)" % queue_name)
+        if not any(isinstance(f, _DowngradeExpectedDisconnects) for f in logger.filters):
+            logger.addFilter(_DowngradeExpectedDisconnects())
+        return super().consume(queue_name, prefetch, timeout)
+
     def _build_queue_arguments(self, queue_name):
         arguments = {
             "x-queue-type": "quorum",
@@ -99,3 +117,22 @@ class QuorumRabbitmqBroker(RabbitmqBroker):
                 "x-message-ttl": DEAD_MESSAGE_TTL,
             },
         )
+
+
+class _DowngradeExpectedDisconnects(logging.Filter):
+    """Downgrade the worker's consumer connection-error record to WARNING when
+    the disconnect was one the broker initiated deliberately (AMQP 320
+    CONNECTION_FORCED, e.g. a rolling restart or deploy), from which the
+    consumer recovers by reconnecting.  Genuine faults -- a broker that stays
+    down, a 404, an abrupt SIGKILL (StreamLostError, no reply code) -- do not
+    carry that signature and keep their original level.
+
+    This is the quorum-broker-only replacement for a ``BrokerShutdown``
+    exception in the base broker, which is unlikely to be accepted upstream.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.levelno > logging.WARNING and "CONNECTION_FORCED" in record.getMessage():
+            record.levelno = logging.WARNING
+            record.levelname = "WARNING"
+        return True

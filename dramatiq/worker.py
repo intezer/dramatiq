@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING, Iterable, Optional, Union
 
 from .broker import Broker, Consumer, MessageProxy
 from .common import current_millis, iter_queue, join_all, q_name
-from .errors import ActorNotFound, BrokerConnectionError, BrokerShutdown, RateLimitExceeded, Retry
+from .errors import ActorNotFound, BrokerConnectionError, RateLimitExceeded, Retry
 from .logging import get_logger
 from .middleware import Middleware, SkipMessage
 from .results.middleware import Results
@@ -321,10 +321,6 @@ class ConsumerThread(Thread):
                     self.handle_delayed_messages()
                     if not self.running:
                         break
-
-            except BrokerShutdown as e:
-                self.logger.warning("Consumer encountered a connection error: %s", e)
-                self.delay_queue = PriorityQueue()
 
             except BrokerConnectionError as e:
                 self.logger.critical("Consumer encountered a connection error: %s", e)
