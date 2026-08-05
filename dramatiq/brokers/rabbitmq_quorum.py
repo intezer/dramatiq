@@ -31,6 +31,7 @@ code, so the base fix stays upstream-compatible.
 from __future__ import annotations
 
 import logging
+import random
 from typing import Any, Optional
 
 from ..broker import Consumer
@@ -73,6 +74,18 @@ class QuorumRabbitmqBroker(RabbitmqBroker):
         # drop publishes made while the queue has lost quorum (the whole
         # failure mode this broker exists to survive).
         super().__init__(confirm_delivery=confirm_delivery, consumer_timeout=consumer_timeout, **kwargs)
+
+    @property
+    def parameters(self):
+        # Shuffle per read so every (re)connection picks a random broker
+        # instead of always pinning to the first configured one.
+        if isinstance(self._parameters, list):
+            return random.sample(self._parameters, len(self._parameters))
+        return self._parameters
+
+    @parameters.setter
+    def parameters(self, value):
+        self._parameters = value
 
     def consume(self, queue_name: str, prefetch: int = 1, timeout: int = 5000) -> Consumer:
         # The worker logs a per-queue critical when the broker deliberately
